@@ -55,6 +55,14 @@ python docq.py document.md -m mistral -e custom-embedding -r custom-rerank
 ### Interactive Mode
 Once the document is loaded, you can interactively ask questions about its contents.
 
+## Acknowledgments
+
+This project was inspired by Fahd Mirza's [Docling with Ollama](https://github.com/fahdmirza/doclingwithollama) project. The primary goals are to:
+- Convert the original work into a command-line tool
+- Add reranking functionality
+
+Special thanks to Fahd Mirza for the original implementation.
+
 ## Contributing
 Contributions are welcome! Please feel free to submit a Pull Request.
 
