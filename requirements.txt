@@ -8,3 +8,4 @@ transformers
 torch
 typing-extensions
 argparse
+pytest  # Added for testing

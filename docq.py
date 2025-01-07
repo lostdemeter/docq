@@ -15,6 +15,9 @@ from llama_index.core.postprocessor import SentenceTransformerRerank
 from llama_index.core.storage.docstore import SimpleDocumentStore
 from llama_index.core.storage.index_store import SimpleIndexStore
 from llama_index.core.storage.storage_context import StorageContext
+from docling.document_converter import DocumentConverter, ImageFormatOption
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import EasyOcrOptions, OcrEngine
 
 def initialize_llm(model_name: str = "llama3.2") -> Ollama:
     """Initialize the Ollama LLM client."""
@@ -22,7 +25,39 @@ def initialize_llm(model_name: str = "llama3.2") -> Ollama:
 
 def get_file_extractor() -> Dict:
     """Get the file extractors for different document types."""
-    reader = DoclingReader()
+    ocr_options = EasyOcrOptions(
+        force_full_page_ocr=True,
+        lang=['en'],
+        confidence_threshold=0.3,  # Lower confidence threshold
+        bitmap_area_threshold=0.01  # Lower area threshold
+    )
+    
+    backend_settings = {
+        'do_ocr': True,
+        'force_ocr': True,
+        'ocr_engine': OcrEngine.EASYOCR,
+        'ocr_options': ocr_options,
+        'table_mode': 'fast',
+        'debug_visualize_ocr': False,  # Disable debug visualization
+        'do_image_analysis': True,
+        'do_layout_analysis': True
+    }
+    
+    converter = DocumentConverter(
+        allowed_formats=[
+            InputFormat.PDF,
+            InputFormat.IMAGE,
+            InputFormat.DOCX,
+            InputFormat.HTML,
+            InputFormat.PPTX,
+        ]
+    )
+    
+    reader = DoclingReader(
+        converter=converter,
+        backend_settings=backend_settings
+    )
+    
     return {
         ".pdf": reader,
         ".docx": reader,
@@ -50,18 +85,7 @@ def setup_query_engine(
     rerank_model: Optional[str] = None,
     use_cache: bool = True
 ) -> VectorStoreIndex:
-    """Set up the query engine with the given document.
-    
-    Args:
-        file_path (str): Path to the document file
-        embedding_model (Optional[str]): Custom embedding model name
-        llm_model (Optional[str]): Custom LLM model name
-        rerank_model (Optional[str]): Custom reranking model name
-        use_cache (bool): Whether to use and persist index cache. Defaults to True.
-    
-    Returns:
-        VectorStoreIndex: Configured query engine for the document
-    """
+    """Set up the query engine with the given document."""
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
 
@@ -72,28 +96,22 @@ def setup_query_engine(
         supported_formats = ", ".join(extractors.keys())
         raise ValueError(f"Unsupported file format: {file_ext}. Supported formats are: {supported_formats}")
 
-    # Create persist directory based on file name
-    persist_dir = Path(file_path).with_suffix('.index')
-
-    # Set up embedding model
-    embedding_model_name = embedding_model or "sentence-transformers/all-MiniLM-L6-v2"
-    embedding_model = HuggingFaceEmbedding(
-        model_name=embedding_model_name, 
-        trust_remote_code=True
+    # Configure embedding model - default to local model
+    Settings.embed_model = HuggingFaceEmbedding(
+        model_name=embedding_model or "sentence-transformers/all-MiniLM-L6-v2"
     )
-    Settings.embed_model = embedding_model
 
-    # Check if we have a saved index and caching is enabled
-    if use_cache and (persist_dir / "docstore.json").exists() and (persist_dir / "index_store.json").exists():
-        print("Loading existing index...")
+    # Set up cache directory
+    persist_dir = Path(file_path).parent / f"{Path(file_path).stem}.index"
+
+    # Check if we can use cached index
+    if use_cache and persist_dir.exists():
         storage_context = StorageContext.from_defaults(
             persist_dir=str(persist_dir)
         )
         index = load_index_from_storage(storage_context=storage_context)
     else:
         # Always create a new index
-        print("Creating new index...")
-        # Initialize components
         directory = os.path.dirname(file_path)
         
         # Load document
@@ -103,24 +121,27 @@ def setup_query_engine(
             file_extractor=extractors
         )
         documents = directory_loader.load_data()
-
+        
         # Initialize storage context
         storage_context = StorageContext.from_defaults()
 
         # Create index
-        markdown_parser = MarkdownNodeParser()
+        transformations = []
+        if Path(file_path).suffix.lower() == '.md':
+            markdown_parser = MarkdownNodeParser()
+            transformations.append(markdown_parser)
+            
         index = VectorStoreIndex.from_documents(
             documents=documents,
-            transformations=[markdown_parser],
+            transformations=transformations,
             storage_context=storage_context,
-            show_progress=True
+            show_progress=False  # Disable progress bar
         )
         
         # Persist the index to disk only if caching is enabled
         if use_cache:
             persist_dir.mkdir(exist_ok=True)
             index.storage_context.persist(persist_dir=str(persist_dir))
-            print(f"Index saved to {persist_dir}")
 
     # Initialize reranker
     rerank_model_name = rerank_model or "BAAI/bge-reranker-v2-m3"
@@ -138,11 +159,13 @@ def setup_query_engine(
     )
 
     custom_qa_prompt = (
-        "Context information is below.\n"
+        "Context information is below. This includes OCR text extracted from images.\n"
         "---------------------\n"
         "{context_str}\n"
         "---------------------\n"
-        "Given the context information above I want you to think step by step to answer the query in a highly precise and crisp manner focused on the final answer, in case you don't know the answer say 'I don't know!'.\n"
+        "Given the context information and OCR text above, answer the query in a direct and precise manner. "
+        "If the query is about reading text from an image, focus on the OCR text that was detected. "
+        "If you don't know the answer, say 'I don't know!'.\n"
         "Query: {query_str}\n"
         "Answer: "
     )
@@ -196,25 +219,34 @@ Interactive Mode:
 
 def interactive_mode(query_engine: VectorStoreIndex):
     """Run an interactive Q&A session."""
-    print("\nEntering interactive mode. Type 'quit' to exit.")
+    print("\nEntering interactive mode. Type 'quit' to exit.\n")
+    
     while True:
-        question = input("\nYour question: ").strip()
-        if question.lower() in ['quit', 'exit']:
-            break
-        
-        if not question:
-            continue
+        try:
+            question = input("Question: ").strip()
+            if not question:
+                continue
+                
+            if question.lower() == 'quit':
+                break
 
-        print("\nThinking...", end="", flush=True)
-        response = query_engine.query(question)
-        print("\r" + " " * 10 + "\r", end="", flush=True)  # Clear "Thinking..." text
-        
-        # Handle streaming response
-        response_text = ""
-        for text_chunk in response.response_gen:
-            response_text += text_chunk
-            print(text_chunk, end="", flush=True)
-        print()  # New line after response
+            print("Answer: ", end="", flush=True)
+            response = query_engine.query(question)
+            response_text = ""
+            for text_chunk in response.response_gen:
+                response_text += text_chunk
+                print(text_chunk, end="", flush=True)
+            print("\n")  # Two new lines after response
+            
+        except KeyboardInterrupt:
+            print("\nExiting...")
+            break
+        except EOFError:
+            print("\nExiting...")
+            break
+        except Exception as e:
+            print(f"\nError: {str(e)}\n")
+            continue
 
 def main():
     """Main CLI entry point."""
