@@ -15,9 +15,6 @@ from llama_index.core.postprocessor import SentenceTransformerRerank
 from llama_index.core.storage.docstore import SimpleDocumentStore
 from llama_index.core.storage.index_store import SimpleIndexStore
 from llama_index.core.storage.storage_context import StorageContext
-from docling.document_converter import DocumentConverter, ImageFormatOption
-from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import EasyOcrOptions, OcrEngine
 
 def initialize_llm(model_name: str = "llama3.2") -> Ollama:
     """Initialize the Ollama LLM client."""
@@ -25,50 +22,21 @@ def initialize_llm(model_name: str = "llama3.2") -> Ollama:
 
 def get_file_extractor() -> Dict:
     """Get the file extractors for different document types."""
-    ocr_options = EasyOcrOptions(
-        force_full_page_ocr=True,
-        lang=['en'],
-        confidence_threshold=0.3,  # Lower confidence threshold
-        bitmap_area_threshold=0.01  # Lower area threshold
-    )
+    # OCR-enabled reader for images and rich documents
+    ocr_reader = DoclingReader()
     
-    backend_settings = {
-        'do_ocr': True,
-        'force_ocr': True,
-        'ocr_engine': OcrEngine.EASYOCR,
-        'ocr_options': ocr_options,
-        'table_mode': 'fast',
-        'debug_visualize_ocr': False,  # Disable debug visualization
-        'do_image_analysis': True,
-        'do_layout_analysis': True
-    }
-    
-    converter = DocumentConverter(
-        allowed_formats=[
-            InputFormat.PDF,
-            InputFormat.IMAGE,
-            InputFormat.DOCX,
-            InputFormat.HTML,
-            InputFormat.PPTX,
-        ]
-    )
-    
-    reader = DoclingReader(
-        converter=converter,
-        backend_settings=backend_settings
-    )
-    
+    # For text files, return None to use default reader
     return {
-        ".pdf": reader,
-        ".docx": reader,
-        ".pptx": reader,
-        ".xlsx": reader,
-        ".png": reader,
-        ".jpg": reader,
-        ".jpeg": reader,
-        ".html": reader,
-        ".md": reader,
-        ".adoc": reader,  # AsciiDoc
+        ".pdf": ocr_reader,
+        ".docx": ocr_reader,
+        ".pptx": ocr_reader,
+        ".xlsx": ocr_reader,
+        ".png": ocr_reader,
+        ".jpg": ocr_reader,
+        ".jpeg": ocr_reader,
+        ".html": ocr_reader,
+        ".md": None,  # Use default reader for markdown
+        ".adoc": None,  # Use default reader for AsciiDoc
     }
 
 def list_supported_formats():
@@ -112,14 +80,23 @@ def setup_query_engine(
         index = load_index_from_storage(storage_context=storage_context)
     else:
         # Always create a new index
+        file_path = os.path.abspath(file_path)  # Convert to absolute path
         directory = os.path.dirname(file_path)
+        file_ext = Path(file_path).suffix.lower()
         
-        # Load document
-        directory_loader = SimpleDirectoryReader(
-            input_dir=directory,
-            input_files=[file_path],
-            file_extractor=extractors
-        )
+        # Use different loading strategy for text files vs OCR files
+        if file_ext in ['.md', '.adoc']:
+            directory_loader = SimpleDirectoryReader(
+                input_dir=directory,
+                input_files=[file_path]
+            )
+        else:
+            directory_loader = SimpleDirectoryReader(
+                input_dir=directory,
+                input_files=[file_path],
+                file_extractor=extractors
+            )
+            
         documents = directory_loader.load_data()
         
         # Initialize storage context
