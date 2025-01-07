@@ -1,0 +1,10 @@
+llama-index-core
+llama-index-llms-ollama
+llama-index-embeddings-huggingface
+llama-index-readers-docling
+llama-index-readers-file
+sentence-transformers
+transformers
+torch
+typing-extensions
+argparse
