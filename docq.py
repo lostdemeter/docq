@@ -51,18 +51,12 @@ def setup_query_engine(
     embedding_model: Optional[str] = None, 
     llm_model: Optional[str] = None,
     rerank_model: Optional[str] = None,
-    use_cache: bool = True
+    use_cache: bool = True,
+    directory_mode: bool = False
 ) -> VectorStoreIndex:
-    """Set up the query engine with the given document."""
+    """Set up the query engine with the given document or directory."""
     if not os.path.exists(file_path):
-        raise FileNotFoundError(f"File not found: {file_path}")
-
-    file_ext = Path(file_path).suffix.lower()
-    extractors = get_file_extractor()
-    
-    if file_ext not in extractors:
-        supported_formats = ", ".join(extractors.keys())
-        raise ValueError(f"Unsupported file format: {file_ext}. Supported formats are: {supported_formats}")
+        raise FileNotFoundError(f"Path not found: {file_path}")
 
     # Configure embedding model - default to local model
     Settings.embed_model = HuggingFaceEmbedding(
@@ -70,7 +64,8 @@ def setup_query_engine(
     )
 
     # Set up cache directory
-    persist_dir = Path(file_path).parent / f"{Path(file_path).stem}.index"
+    cache_name = Path(file_path).stem if not directory_mode else Path(file_path).name
+    persist_dir = Path(file_path).parent / f"{cache_name}.index"
 
     # Check if we can use cached index
     if use_cache and persist_dir.exists():
@@ -81,21 +76,37 @@ def setup_query_engine(
     else:
         # Always create a new index
         file_path = os.path.abspath(file_path)  # Convert to absolute path
-        directory = os.path.dirname(file_path)
-        file_ext = Path(file_path).suffix.lower()
         
-        # Use different loading strategy for text files vs OCR files
-        if file_ext in ['.md', '.adoc']:
+        if directory_mode:
+            # Load all files from directory
             directory_loader = SimpleDirectoryReader(
-                input_dir=directory,
-                input_files=[file_path]
+                input_dir=file_path,
+                file_extractor=get_file_extractor(),
+                recursive=True,
+                filename_as_id=True
             )
         else:
-            directory_loader = SimpleDirectoryReader(
-                input_dir=directory,
-                input_files=[file_path],
-                file_extractor=extractors
-            )
+            # Single file mode
+            directory = os.path.dirname(file_path)
+            file_ext = Path(file_path).suffix.lower()
+            extractors = get_file_extractor()
+            
+            if file_ext not in extractors:
+                supported_formats = ", ".join(extractors.keys())
+                raise ValueError(f"Unsupported file format: {file_ext}. Supported formats are: {supported_formats}")
+            
+            # Use different loading strategy for text files vs OCR files
+            if file_ext in ['.md', '.adoc']:
+                directory_loader = SimpleDirectoryReader(
+                    input_dir=directory,
+                    input_files=[file_path]
+                )
+            else:
+                directory_loader = SimpleDirectoryReader(
+                    input_dir=directory,
+                    input_files=[file_path],
+                    file_extractor=extractors
+                )
             
         documents = directory_loader.load_data()
         
@@ -104,7 +115,7 @@ def setup_query_engine(
 
         # Create index
         transformations = []
-        if Path(file_path).suffix.lower() == '.md':
+        if Path(file_path).suffix.lower() == '.md' and not directory_mode:
             markdown_parser = MarkdownNodeParser()
             transformations.append(markdown_parser)
             
@@ -159,9 +170,10 @@ Document Q&A CLI Tool Help
 Usage: python docq.py [FILE_PATH] [OPTIONS]
 
 Positional Arguments:
-  FILE_PATH            Path to the document file to query
+  FILE_PATH            Path to the document file or directory to query
 
 Options:
+  -d, --directory      Process entire directory of documents
   -n, --no-cache       Disable index caching (regenerate index each time)
   -h, --help           Show this help message and exit
   -l, --list-formats   List supported file formats
@@ -228,7 +240,9 @@ def interactive_mode(query_engine: VectorStoreIndex):
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(description="Document Q&A CLI Tool", add_help=False)
-    parser.add_argument("file_path", nargs="?", help="Path to the document file to query")
+    parser.add_argument("file_path", nargs="?", help="Path to the document file or directory to query")
+    parser.add_argument("-d", "--directory", action="store_true", 
+                        help="Process entire directory of documents")
     parser.add_argument("-n", "--no-cache", action="store_true", 
                         help="Disable index caching (regenerate index each time)")
     parser.add_argument("-h", "--help", action="store_true", help="Show help message")
@@ -269,7 +283,8 @@ def main():
             embedding_model=args.embedding_model,
             llm_model=args.llm_model,
             rerank_model=args.rerank_model,
-            use_cache=not args.no_cache  # Invert the no-cache flag
+            use_cache=not args.no_cache,  # Invert the no-cache flag
+            directory_mode=args.directory
         )
 
         # Handle single question or interactive mode

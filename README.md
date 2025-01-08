@@ -6,6 +6,7 @@ A powerful CLI tool for querying and interacting with various document types usi
 ## Features
 - Support for multiple document formats (PDF, DOCX, PPTX, HTML, Markdown, etc.)
 - Interactive query mode
+- Directory mode for processing multiple documents at once
 - Powered by Ollama LLM and HuggingFace embeddings
 
 ## Prerequisites
@@ -40,6 +41,11 @@ python docq.py [document_path]
 Query a specific document:
 ```bash
 python docq.py document.md -q "What is the main topic?"
+```
+
+Process an entire directory:
+```bash
+python docq.py ./docs -d
 ```
 
 List supported file formats:
